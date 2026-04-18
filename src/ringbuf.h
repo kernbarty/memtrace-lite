@@ -34,6 +34,9 @@ const MemSnapshot *ringbuf_get(const RingBuf *rb, size_t i);
 /* Return number of valid entries currently stored. */
 size_t ringbuf_count(const RingBuf *rb);
 
+/* Return the most recently pushed snapshot, or NULL if the buffer is empty. */
+const MemSnapshot *ringbuf_peek_latest(const RingBuf *rb);
+
 /* Clear all entries without freeing memory. */
 void ringbuf_clear(RingBuf *rb);
 
