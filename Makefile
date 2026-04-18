@@ -20,3 +20,9 @@ $(TEST_BIN): tests/test_procmem.c $(OBJS)
 
 clean:
 	rm -f $(OBJS) $(TEST_BIN)
+
+# Run static analysis via cppcheck if available
+lint:
+	cppcheck --enable=all --std=c11 --quiet $(SRCS)
+
+.PHONY: lint
