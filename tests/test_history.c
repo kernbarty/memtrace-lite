@@ -1,90 +1,94 @@
 #include <stdio.h>
 #include <assert.h>
-#include <string.h>
-#include <time.h>
 #include "../src/history.h"
-#include "../src/snapshot.h"
+#include "../src/history_query.h"
 
-static MemSnapshot make_snap(unsigned long rss, unsigned long virt) {
-    MemSnapshot s;
-    memset(&s, 0, sizeof(s));
-    s.rss_kb  = rss;
-    s.virt_kb = virt;
+static MemSnapshot make_snap(long rss, long vms) {
+    MemSnapshot s = {0};
+    s.rss_kb = rss;
+    s.vms_kb = vms;
     return s;
 }
 
-static void test_init(void) {
-    MemHistory h;
-    history_init(&h);
+void test_history_basic(void) {
+    History h;
+    assert(history_init(&h, 4));
     assert(history_count(&h) == 0);
-    assert(history_peak_rss(&h) == 0);
-    printf("PASS test_init\n");
-}
-
-static void test_push_and_count(void) {
-    MemHistory h;
-    history_init(&h);
-    MemSnapshot s = make_snap(1024, 4096);
-    history_push(&h, &s, time(NULL));
+    MemSnapshot s = make_snap(100, 200);
+    assert(history_push(&h, &s));
     assert(history_count(&h) == 1);
-    history_push(&h, &s, time(NULL));
-    assert(history_count(&h) == 2);
-    printf("PASS test_push_and_count\n");
+    MemSnapshot out;
+    assert(history_latest(&h, &out));
+    assert(out.rss_kb == 100);
+    history_free(&h);
+    printf("PASS test_history_basic\n");
 }
 
-static void test_get_order(void) {
-    MemHistory h;
-    history_init(&h);
-    time_t base = 1000;
-    for (int i = 0; i < 5; i++) {
-        MemSnapshot s = make_snap((unsigned long)(i + 1) * 100, 0);
-        history_push(&h, &s, base + i);
+void test_history_wrap(void) {
+    History h;
+    assert(history_init(&h, 3));
+    for (int i = 1; i <= 5; i++) {
+        MemSnapshot s = make_snap(i * 10, i * 20);
+        history_push(&h, &s);
     }
-    HistoryEntry out[5];
-    size_t n = history_get(&h, out, 5);
-    assert(n == 5);
-    for (size_t i = 0; i < n; i++) {
-        assert(out[i].timestamp == base + (time_t)i);
-        assert(out[i].snapshot.rss_kb == (unsigned long)(i + 1) * 100);
-    }
-    printf("PASS test_get_order\n");
+    assert(history_count(&h) == 3);
+    MemSnapshot out;
+    history_get(&h, 0, &out);
+    assert(out.rss_kb == 30);
+    history_get(&h, 2, &out);
+    assert(out.rss_kb == 50);
+    history_free(&h);
+    printf("PASS test_history_wrap\n");
 }
 
-static void test_peak_rss(void) {
-    MemHistory h;
-    history_init(&h);
-    unsigned long vals[] = {512, 2048, 1024, 4096, 256};
-    for (int i = 0; i < 5; i++) {
-        MemSnapshot s = make_snap(vals[i], 0);
-        history_push(&h, &s, (time_t)(1000 + i));
-    }
-    assert(history_peak_rss(&h) == 4096);
-    printf("PASS test_peak_rss\n");
+void test_history_query_stats(void) {
+    History h;
+    assert(history_init(&h, 8));
+    history_push(&h, &(MemSnapshot){.rss_kb=100,.vms_kb=200});
+    history_push(&h, &(MemSnapshot){.rss_kb=200,.vms_kb=400});
+    history_push(&h, &(MemSnapshot){.rss_kb=150,.vms_kb=300});
+    HistoryStats st;
+    assert(history_query_stats(&h, &st));
+    assert(st.sample_count == 3);
+    assert(st.rss_peak_kb == 200);
+    assert(st.rss_delta_kb == 50);
+    history_free(&h);
+    printf("PASS test_history_query_stats\n");
 }
 
-static void test_circular_wrap(void) {
-    MemHistory h;
-    history_init(&h);
-    /* Fill beyond HISTORY_MAX_ENTRIES */
-    for (int i = 0; i < HISTORY_MAX_ENTRIES + 10; i++) {
-        MemSnapshot s = make_snap((unsigned long)i, 0);
-        history_push(&h, &s, (time_t)i);
-    }
-    assert(history_count(&h) == HISTORY_MAX_ENTRIES);
-    HistoryEntry out[HISTORY_MAX_ENTRIES];
-    size_t n = history_get(&h, out, HISTORY_MAX_ENTRIES);
-    assert(n == HISTORY_MAX_ENTRIES);
-    /* Oldest surviving entry should be index 10 */
-    assert(out[0].snapshot.rss_kb == 10);
-    printf("PASS test_circular_wrap\n");
+void test_history_query_peak(void) {
+    History h;
+    assert(history_init(&h, 4));
+    history_push(&h, &(MemSnapshot){.rss_kb=50});
+    history_push(&h, &(MemSnapshot){.rss_kb=300});
+    history_push(&h, &(MemSnapshot){.rss_kb=100});
+    MemSnapshot peak;
+    assert(history_query_peak_rss(&h, &peak));
+    assert(peak.rss_kb == 300);
+    history_free(&h);
+    printf("PASS test_history_query_peak\n");
+}
+
+void test_history_query_find_exceed(void) {
+    History h;
+    assert(history_init(&h, 8));
+    history_push(&h, &(MemSnapshot){.rss_kb=50});
+    history_push(&h, &(MemSnapshot){.rss_kb=80});
+    history_push(&h, &(MemSnapshot){.rss_kb=200});
+    size_t idx;
+    assert(history_query_find_rss_exceed(&h, 100, &idx));
+    assert(idx == 2);
+    assert(!history_query_find_rss_exceed(&h, 500, &idx));
+    history_free(&h);
+    printf("PASS test_history_query_find_exceed\n");
 }
 
 int main(void) {
-    test_init();
-    test_push_and_count();
-    test_get_order();
-    test_peak_rss();
-    test_circular_wrap();
+    test_history_basic();
+    test_history_wrap();
+    test_history_query_stats();
+    test_history_query_peak();
+    test_history_query_find_exceed();
     printf("All history tests passed.\n");
     return 0;
 }
