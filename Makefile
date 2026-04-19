@@ -1,48 +1,38 @@
 CC      = gcc
-CFLAGS  = -Wall -Wextra -g -Isrc
-SRCS    = src/procmem.c src/snapshot.c src/sampler.c src/reporter.c \
-          src/tracker.c src/formatter.c src/alert.c src/filter.c \
-          src/filter_chain.c src/ringbuf.c src/stats.c src/history.c \
-          src/history_query.c
-OBJS    = $(SRCS:.c=.o)
+CFLAGS  = -Wall -Wextra -g -Isrc -lm
+SRCDIR  = src
+TESTDIR = tests
+BUILDDIR = build
 
-TESTS   = tests/test_procmem tests/test_snapshot tests/test_reporter \
-          tests/test_tracker tests/test_alert tests/test_filter \
-          tests/test_ringbuf tests/test_stats tests/test_history
+SRCS = $(wildcard $(SRCDIR)/*.c)
+OBJS = $(patsubst $(SRCDIR)/%.c,$(BUILDDIR)/%.o,$(SRCS))
+
+TESTS = test_procmem test_snapshot test_reporter test_tracker \
+        test_alert test_filter test_ringbuf test_stats \
+        test_history test_threshold test_trend test_decay \
+        test_baseline
 
 .PHONY: all clean test
 
-all: $(OBJS)
+all: $(BUILDDIR) $(OBJS)
 
-tests/test_procmem: tests/test_procmem.c src/procmem.c
-	$(CC) $(CFLAGS) $^ -o $@
+$(BUILDDIR):
+	mkdir -p $(BUILDDIR)
 
-tests/test_snapshot: tests/test_snapshot.c src/snapshot.c src/procmem.c
-	$(CC) $(CFLAGS) $^ -o $@
+$(BUILDDIR)/%.o: $(SRCDIR)/%.c | $(BUILDDIR)
+	$(CC) $(CFLAGS) -c $< -o $@
 
-tests/test_reporter: tests/test_reporter.c src/reporter.c src/snapshot.c src/procmem.c src/formatter.c
-	$(CC) $(CFLAGS) $^ -o $@
+define make_test
+$(BUILDDIR)/$(1): $(TESTDIR)/$(1).c $(SRCS) | $(BUILDDIR)
+	$(CC) $(CFLAGS) $(TESTDIR)/$(1).c $(SRCS) -o $$@ -lm
+endef
 
-tests/test_tracker: tests/test_tracker.c src/tracker.c src/snapshot.c src/procmem.c src/sampler.c
-	$(CC) $(CFLAGS) $^ -o $@
+$(foreach t,$(TESTS),$(eval $(call make_test,$(t))))
 
-tests/test_alert: tests/test_alert.c src/alert.c src/snapshot.c src/procmem.c
-	$(CC) $(CFLAGS) $^ -o $@
-
-tests/test_filter: tests/test_filter.c src/filter.c src/filter_chain.c src/snapshot.c src/procmem.c
-	$(CC) $(CFLAGS) $^ -o $@
-
-tests/test_ringbuf: tests/test_ringbuf.c src/ringbuf.c
-	$(CC) $(CFLAGS) $^ -o $@
-
-tests/test_stats: tests/test_stats.c src/stats.c src/ringbuf.c
-	$(CC) $(CFLAGS) $^ -o $@
-
-tests/test_history: tests/test_history.c src/history.c src/history_query.c src/snapshot.c src/procmem.c
-	$(CC) $(CFLAGS) $^ -o $@
-
-test: $(TESTS)
-	@for t in $(TESTS); do echo "--- $$t ---"; ./$$t; done
+test: $(addprefix $(BUILDDIR)/,$(TESTS))
+	@echo "=== Running all tests ==="
+	@for t in $^; do echo "--- $$t ---"; ./$$t || exit 1; done
+	@echo "=== All tests passed ==="
 
 clean:
-	rm -f $(OBJS) $(TESTS)
+	rm -rf $(BUILDDIR)
