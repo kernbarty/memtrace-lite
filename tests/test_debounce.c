@@ -1,81 +1,99 @@
 #include <stdio.h>
 #include <assert.h>
+#include <stdbool.h>
 #include "../src/debounce.h"
 
 static int passed = 0;
 static int failed = 0;
 
-#define CHECK(cond, msg) \
-    do { if (cond) { printf("PASS: %s\n", msg); passed++; } \
-         else { printf("FAIL: %s\n", msg); failed++; } } while(0)
+#define TEST(name) static void name(void)
+#define RUN(name) do { printf("  " #name "... "); name(); printf("OK\n"); passed++; } while(0)
 
-static void test_first_trigger_accepted(void) {
+TEST(test_init) {
     Debounce db;
-    debounce_init(&db, 500);
-    CHECK(debounce_trigger(&db, 1000), "first trigger accepted");
+    debounce_init(&db, 500, 3);
+    assert(!debounce_is_active(&db));
+    assert(debounce_count(&db) == 0);
 }
 
-static void test_trigger_within_window_suppressed(void) {
+TEST(test_no_signal) {
     Debounce db;
-    debounce_init(&db, 500);
-    debounce_trigger(&db, 1000);
-    CHECK(!debounce_trigger(&db, 1200), "trigger within window suppressed");
+    debounce_init(&db, 500, 2);
+    bool result = debounce_update(&db, false, 1000);
+    assert(!result);
+    assert(!debounce_is_active(&db));
+    assert(debounce_count(&db) == 0);
 }
 
-static void test_trigger_after_window_accepted(void) {
+TEST(test_single_signal_not_enough) {
     Debounce db;
-    debounce_init(&db, 500);
-    debounce_trigger(&db, 1000);
-    CHECK(debounce_trigger(&db, 1600), "trigger after window accepted");
+    debounce_init(&db, 500, 3);
+    bool r = debounce_update(&db, true, 1000);
+    assert(!r);
+    assert(debounce_count(&db) == 1);
 }
 
-static void test_trigger_at_exact_boundary(void) {
+TEST(test_activates_at_min_count) {
     Debounce db;
-    debounce_init(&db, 500);
-    debounce_trigger(&db, 1000);
-    CHECK(debounce_trigger(&db, 1500), "trigger at exact boundary accepted");
+    debounce_init(&db, 500, 3);
+    debounce_update(&db, true, 1000);
+    debounce_update(&db, true, 1100);
+    bool r = debounce_update(&db, true, 1200);
+    assert(r);
+    assert(debounce_is_active(&db));
+    assert(debounce_count(&db) == 3);
 }
 
-static void test_reset_allows_immediate_trigger(void) {
+TEST(test_window_expiry_resets) {
     Debounce db;
-    debounce_init(&db, 500);
-    debounce_trigger(&db, 1000);
+    debounce_init(&db, 200, 3);
+    debounce_update(&db, true, 1000);
+    debounce_update(&db, true, 1100);
+    /* gap exceeds window */
+    bool r = debounce_update(&db, true, 1300);
+    assert(!r);
+    assert(debounce_count(&db) == 1);
+}
+
+TEST(test_reset_clears_state) {
+    Debounce db;
+    debounce_init(&db, 500, 2);
+    debounce_update(&db, true, 1000);
+    debounce_update(&db, true, 1100);
+    assert(debounce_is_active(&db));
     debounce_reset(&db);
-    CHECK(debounce_trigger(&db, 1100), "trigger accepted after reset");
+    assert(!debounce_is_active(&db));
+    assert(debounce_count(&db) == 0);
 }
 
-static void test_remaining_within_window(void) {
+TEST(test_false_signal_resets) {
     Debounce db;
-    debounce_init(&db, 500);
-    debounce_trigger(&db, 1000);
-    uint64_t rem = debounce_remaining(&db, 1200);
-    CHECK(rem == 300, "remaining ms correct within window");
+    debounce_init(&db, 500, 2);
+    debounce_update(&db, true, 1000);
+    debounce_update(&db, true, 1050);
+    assert(debounce_is_active(&db));
+    debounce_update(&db, false, 1100);
+    assert(!debounce_is_active(&db));
 }
 
-static void test_remaining_after_window(void) {
-    Debounce db;
-    debounce_init(&db, 500);
-    debounce_trigger(&db, 1000);
-    uint64_t rem = debounce_remaining(&db, 1600);
-    CHECK(rem == 0, "remaining is 0 after window expires");
-}
-
-static void test_unarmed_remaining_is_zero(void) {
-    Debounce db;
-    debounce_init(&db, 500);
-    CHECK(debounce_remaining(&db, 0) == 0, "unarmed remaining is 0");
+TEST(test_null_safety) {
+    debounce_init(NULL, 100, 2);
+    bool r = debounce_update(NULL, true, 1000);
+    assert(!r);
+    assert(!debounce_is_active(NULL));
+    assert(debounce_count(NULL) == 0);
 }
 
 int main(void) {
-    test_first_trigger_accepted();
-    test_trigger_within_window_suppressed();
-    test_trigger_after_window_accepted();
-    test_trigger_at_exact_boundary();
-    test_reset_allows_immediate_trigger();
-    test_remaining_within_window();
-    test_remaining_after_window();
-    test_unarmed_remaining_is_zero();
-
-    printf("\nResults: %d passed, %d failed\n", passed, failed);
+    printf("test_debounce\n");
+    RUN(test_init);
+    RUN(test_no_signal);
+    RUN(test_single_signal_not_enough);
+    RUN(test_activates_at_min_count);
+    RUN(test_window_expiry_resets);
+    RUN(test_reset_clears_state);
+    RUN(test_false_signal_resets);
+    RUN(test_null_safety);
+    printf("Results: %d passed, %d failed\n", passed, failed);
     return failed ? 1 : 0;
 }
