@@ -1,82 +1,88 @@
 #include <stdio.h>
-#include <stdlib.h>
-#include <unistd.h>
 #include <assert.h>
+#include <stdint.h>
 #include "../src/cooldown.h"
 
 static int passed = 0;
 static int failed = 0;
 
-#define TEST(name) printf("  %-40s", name)
-#define PASS() do { puts("PASS"); passed++; } while(0)
-#define FAIL(msg) do { printf("FAIL (%s)\n", msg); failed++; } while(0)
+#define TEST(name) static void test_##name(void)
+#define RUN(name) do { test_##name(); printf("  [PASS] " #name "\n"); passed++; } while(0)
 
-static void test_init(void) {
-    TEST("cooldown_init sets interval");
+TEST(init) {
     Cooldown cd;
-    cooldown_init(&cd, 1.5);
-    if (cd.interval_sec == 1.5 && !cd.armed) PASS(); else FAIL("wrong init");
+    cooldown_init(&cd, 500);
+    assert(cd.period_ms == 500);
+    assert(!cd.active);
+    assert(cd.last_trigger_ms == 0);
 }
 
-static void test_first_check_passes(void) {
-    TEST("first check always passes");
+TEST(ready_when_inactive) {
     Cooldown cd;
-    cooldown_init(&cd, 10.0);
-    if (cooldown_check(&cd)) PASS(); else FAIL("should pass");
+    cooldown_init(&cd, 1000);
+    assert(cooldown_ready(&cd, 9999));
 }
 
-static void test_second_check_blocked(void) {
-    TEST("second check blocked within interval");
+TEST(trigger_first_time) {
     Cooldown cd;
-    cooldown_init(&cd, 10.0);
-    cooldown_check(&cd);
-    if (!cooldown_check(&cd)) PASS(); else FAIL("should be blocked");
+    cooldown_init(&cd, 1000);
+    bool ok = cooldown_trigger(&cd, 100);
+    assert(ok);
+    assert(cd.active);
+    assert(cd.last_trigger_ms == 100);
 }
 
-static void test_remaining_nonzero(void) {
-    TEST("remaining > 0 after trigger");
+TEST(trigger_blocked_during_cooldown) {
     Cooldown cd;
-    cooldown_init(&cd, 5.0);
-    cooldown_check(&cd);
-    double r = cooldown_remaining(&cd);
-    if (r > 0.0 && r <= 5.0) PASS(); else FAIL("bad remaining");
+    cooldown_init(&cd, 1000);
+    cooldown_trigger(&cd, 0);
+    bool ok = cooldown_trigger(&cd, 500);
+    assert(!ok);
 }
 
-static void test_remaining_zero_before_trigger(void) {
-    TEST("remaining 0 before any trigger");
+TEST(trigger_allowed_after_period) {
     Cooldown cd;
-    cooldown_init(&cd, 5.0);
-    if (cooldown_remaining(&cd) == 0.0) PASS(); else FAIL("should be 0");
+    cooldown_init(&cd, 1000);
+    cooldown_trigger(&cd, 0);
+    bool ok = cooldown_trigger(&cd, 1000);
+    assert(ok);
+    assert(cd.last_trigger_ms == 1000);
 }
 
-static void test_reset_allows_recheck(void) {
-    TEST("reset allows immediate recheck");
+TEST(remaining_ms) {
     Cooldown cd;
-    cooldown_init(&cd, 10.0);
-    cooldown_check(&cd);
+    cooldown_init(&cd, 1000);
+    cooldown_trigger(&cd, 200);
+    uint64_t rem = cooldown_remaining_ms(&cd, 700);
+    assert(rem == 500);
+}
+
+TEST(remaining_ms_expired) {
+    Cooldown cd;
+    cooldown_init(&cd, 1000);
+    cooldown_trigger(&cd, 0);
+    assert(cooldown_remaining_ms(&cd, 1500) == 0);
+}
+
+TEST(reset) {
+    Cooldown cd;
+    cooldown_init(&cd, 500);
+    cooldown_trigger(&cd, 100);
     cooldown_reset(&cd);
-    if (cooldown_check(&cd)) PASS(); else FAIL("should pass after reset");
-}
-
-static void test_short_interval_expires(void) {
-    TEST("short interval expires after sleep");
-    Cooldown cd;
-    cooldown_init(&cd, 0.05);
-    cooldown_check(&cd);
-    struct timespec ts = {0, 60000000L}; /* 60ms */
-    nanosleep(&ts, NULL);
-    if (cooldown_check(&cd)) PASS(); else FAIL("should expire");
+    assert(!cd.active);
+    assert(cooldown_ready(&cd, 0));
 }
 
 int main(void) {
-    printf("=== test_cooldown ===\n");
-    test_init();
-    test_first_check_passes();
-    test_second_check_blocked();
-    test_remaining_nonzero();
-    test_remaining_zero_before_trigger();
-    test_reset_allows_recheck();
-    test_short_interval_expires();
+    printf("Running cooldown tests...\n");
+    RUN(init);
+    RUN(ready_when_inactive);
+    RUN(trigger_first_time);
+    RUN(trigger_blocked_during_cooldown);
+    RUN(trigger_allowed_after_period);
+    RUN(remaining_ms);
+    RUN(remaining_ms_expired);
+    RUN(reset);
     printf("Results: %d passed, %d failed\n", passed, failed);
-    return failed ? EXIT_FAILURE : EXIT_SUCCESS;
+    return failed ? 1 : 0;
 }
