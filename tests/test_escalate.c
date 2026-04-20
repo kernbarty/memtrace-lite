@@ -3,110 +3,115 @@
 #include <string.h>
 #include "../src/escalate.h"
 
-static escalate_config_t default_cfg(void) {
+static escalate_config_t make_cfg(uint32_t notice, uint32_t warning, uint32_t critical, uint64_t auto_reset_ms) {
     escalate_config_t cfg;
-    cfg.warn_strikes     = 2;
-    cfg.error_strikes    = 4;
-    cfg.critical_strikes = 6;
-    cfg.reset_strikes    = 3;
+    cfg.notice_threshold   = notice;
+    cfg.warning_threshold  = warning;
+    cfg.critical_threshold = critical;
+    cfg.auto_reset_ms      = auto_reset_ms;
     return cfg;
 }
 
 static void test_initial_state(void) {
     escalate_t e;
-    escalate_config_t cfg = default_cfg();
+    escalate_config_t cfg = make_cfg(2, 4, 6, 0);
     escalate_init(&e, &cfg);
     assert(escalate_current_level(&e) == ESCALATE_LEVEL_NONE);
-    printf("PASS: test_initial_state\n");
+    assert(escalate_trigger_count(&e) == 0);
+    printf("PASS test_initial_state\n");
 }
 
-static void test_escalation_to_warn(void) {
+static void test_level_progression(void) {
     escalate_t e;
-    escalate_config_t cfg = default_cfg();
+    escalate_config_t cfg = make_cfg(2, 4, 6, 0);
     escalate_init(&e, &cfg);
 
-    escalate_record_violation(&e, 1000);
+    escalate_level_t lvl;
+    lvl = escalate_update(&e, 1, 1000);
+    assert(lvl == ESCALATE_LEVEL_NONE);
+
+    lvl = escalate_update(&e, 1, 2000);
+    assert(lvl == ESCALATE_LEVEL_NOTICE);
+
+    lvl = escalate_update(&e, 1, 3000);
+    assert(lvl == ESCALATE_LEVEL_NOTICE);
+
+    lvl = escalate_update(&e, 1, 4000);
+    assert(lvl == ESCALATE_LEVEL_WARNING);
+
+    lvl = escalate_update(&e, 1, 5000);
+    assert(lvl == ESCALATE_LEVEL_WARNING);
+
+    lvl = escalate_update(&e, 1, 6000);
+    assert(lvl == ESCALATE_LEVEL_CRITICAL);
+
+    assert(escalate_trigger_count(&e) == 6);
+    printf("PASS test_level_progression\n");
+}
+
+static void test_no_trigger_holds_level(void) {
+    escalate_t e;
+    escalate_config_t cfg = make_cfg(1, 3, 5, 0);
+    escalate_init(&e, &cfg);
+
+    escalate_update(&e, 1, 1000);
+    assert(escalate_current_level(&e) == ESCALATE_LEVEL_NOTICE);
+
+    escalate_update(&e, 0, 2000);
+    assert(escalate_current_level(&e) == ESCALATE_LEVEL_NOTICE);
+    printf("PASS test_no_trigger_holds_level\n");
+}
+
+static void test_auto_reset(void) {
+    escalate_t e;
+    escalate_config_t cfg = make_cfg(1, 3, 5, 5000);
+    escalate_init(&e, &cfg);
+
+    escalate_update(&e, 1, 1000);
+    assert(escalate_current_level(&e) == ESCALATE_LEVEL_NOTICE);
+
+    /* Not enough time passed — level stays */
+    escalate_update(&e, 0, 4000);
+    assert(escalate_current_level(&e) == ESCALATE_LEVEL_NOTICE);
+
+    /* Enough time passed — auto reset */
+    escalate_update(&e, 0, 7000);
     assert(escalate_current_level(&e) == ESCALATE_LEVEL_NONE);
-    escalate_record_violation(&e, 2000);
-    assert(escalate_current_level(&e) == ESCALATE_LEVEL_WARN);
-    printf("PASS: test_escalation_to_warn\n");
+    assert(escalate_trigger_count(&e) == 0);
+    printf("PASS test_auto_reset\n");
 }
 
-static void test_escalation_to_error(void) {
+static void test_manual_reset(void) {
     escalate_t e;
-    escalate_config_t cfg = default_cfg();
+    escalate_config_t cfg = make_cfg(1, 2, 3, 0);
     escalate_init(&e, &cfg);
 
-    for (int i = 0; i < 4; i++)
-        escalate_record_violation(&e, (uint64_t)(i + 1) * 1000);
-
-    assert(escalate_current_level(&e) == ESCALATE_LEVEL_ERROR);
-    printf("PASS: test_escalation_to_error\n");
-}
-
-static void test_escalation_to_critical(void) {
-    escalate_t e;
-    escalate_config_t cfg = default_cfg();
-    escalate_init(&e, &cfg);
-
-    for (int i = 0; i < 6; i++)
-        escalate_record_violation(&e, (uint64_t)(i + 1) * 1000);
-
+    escalate_update(&e, 1, 1000);
+    escalate_update(&e, 1, 2000);
+    escalate_update(&e, 1, 3000);
     assert(escalate_current_level(&e) == ESCALATE_LEVEL_CRITICAL);
-    printf("PASS: test_escalation_to_critical\n");
-}
 
-static void test_clear_resets_after_threshold(void) {
-    escalate_t e;
-    escalate_config_t cfg = default_cfg();
-    escalate_init(&e, &cfg);
-
-    for (int i = 0; i < 4; i++)
-        escalate_record_violation(&e, (uint64_t)(i + 1) * 1000);
-    assert(escalate_current_level(&e) == ESCALATE_LEVEL_ERROR);
-
-    escalate_record_clear(&e, 5000);
-    escalate_record_clear(&e, 6000);
-    assert(escalate_current_level(&e) == ESCALATE_LEVEL_ERROR); /* not yet reset */
-
-    escalate_record_clear(&e, 7000);
+    escalate_reset(&e);
     assert(escalate_current_level(&e) == ESCALATE_LEVEL_NONE);
-    printf("PASS: test_clear_resets_after_threshold\n");
+    assert(escalate_trigger_count(&e) == 0);
+    printf("PASS test_manual_reset\n");
 }
 
-static void test_violation_interrupts_clear_streak(void) {
-    escalate_t e;
-    escalate_config_t cfg = default_cfg();
-    escalate_init(&e, &cfg);
-
-    for (int i = 0; i < 4; i++)
-        escalate_record_violation(&e, (uint64_t)(i + 1) * 1000);
-
-    escalate_record_clear(&e, 5000);
-    escalate_record_clear(&e, 6000);
-    escalate_record_violation(&e, 7000); /* interrupts clear streak */
-    escalate_record_clear(&e, 8000);
-    escalate_record_clear(&e, 9000);
-    assert(escalate_current_level(&e) != ESCALATE_LEVEL_NONE);
-    printf("PASS: test_violation_interrupts_clear_streak\n");
-}
-
-static void test_level_str(void) {
-    assert(strcmp(escalate_level_str(ESCALATE_LEVEL_NONE),     "none")     == 0);
-    assert(strcmp(escalate_level_str(ESCALATE_LEVEL_WARN),     "warn")     == 0);
-    assert(strcmp(escalate_level_str(ESCALATE_LEVEL_ERROR),    "error")    == 0);
-    assert(strcmp(escalate_level_str(ESCALATE_LEVEL_CRITICAL), "critical") == 0);
-    printf("PASS: test_level_str\n");
+static void test_level_name(void) {
+    assert(strcmp(escalate_level_name(ESCALATE_LEVEL_NONE),     "none")     == 0);
+    assert(strcmp(escalate_level_name(ESCALATE_LEVEL_NOTICE),   "notice")   == 0);
+    assert(strcmp(escalate_level_name(ESCALATE_LEVEL_WARNING),  "warning")  == 0);
+    assert(strcmp(escalate_level_name(ESCALATE_LEVEL_CRITICAL), "critical") == 0);
+    printf("PASS test_level_name\n");
 }
 
 int main(void) {
     test_initial_state();
-    test_escalation_to_warn();
-    test_escalation_to_error();
-    test_escalation_to_critical();
-    test_clear_resets_after_threshold();
-    test_violation_interrupts_clear_streak();
-    test_level_str();
+    test_level_progression();
+    test_no_trigger_holds_level();
+    test_auto_reset();
+    test_manual_reset();
+    test_level_name();
     printf("All escalate tests passed.\n");
     return 0;
 }
