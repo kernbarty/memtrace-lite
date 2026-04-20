@@ -1,87 +1,107 @@
 #include <stdio.h>
 #include <assert.h>
-#include <string.h>
-#include <unistd.h>
 #include "../src/suppress.h"
 
-static void test_init(void) {
+static int passed = 0;
+static int failed = 0;
+
+#define TEST(name) static void test_##name(void)
+#define RUN(name) do { printf("  %-40s", #name); test_##name(); printf("PASS\n"); passed++; } while(0)
+
+TEST(timed_first_event_not_suppressed) {
     suppress_t s;
-    suppress_init(&s, 10);
-    assert(s.count == 0);
-    assert(s.window_sec == 10);
-    printf("  [PASS] test_init\n");
+    suppress_init(&s, SUPPRESS_MODE_TIMED, 500, 0);
+    bool r = suppress_record(&s, 1000);
+    assert(r == false);
+    assert(suppress_is_active(&s) == true);
 }
 
-static void test_first_event_not_suppressed(void) {
+TEST(timed_subsequent_suppressed) {
     suppress_t s;
-    suppress_init(&s, 10);
-    bool suppressed = suppress_check(&s, "oom_alert");
-    assert(!suppressed);
-    assert(s.count == 1);
-    printf("  [PASS] test_first_event_not_suppressed\n");
+    suppress_init(&s, SUPPRESS_MODE_TIMED, 500, 0);
+    suppress_record(&s, 1000);
+    bool r = suppress_record(&s, 1100);
+    assert(r == true);
 }
 
-static void test_repeat_within_window_suppressed(void) {
+TEST(timed_expires) {
     suppress_t s;
-    suppress_init(&s, 60);
-    suppress_check(&s, "leak_alert");
-    bool suppressed = suppress_check(&s, "leak_alert");
-    assert(suppressed);
-    assert(suppress_count(&s, "leak_alert") >= 1);
-    printf("  [PASS] test_repeat_within_window_suppressed\n");
+    suppress_init(&s, SUPPRESS_MODE_TIMED, 500, 0);
+    suppress_record(&s, 1000);
+    bool r = suppress_check(&s, 1600);
+    assert(r == false);
+    assert(suppress_is_active(&s) == false);
 }
 
-static void test_different_keys_independent(void) {
+TEST(timed_new_event_after_expiry) {
     suppress_t s;
-    suppress_init(&s, 60);
-    suppress_check(&s, "key_a");
-    suppress_check(&s, "key_a");
-    bool b = suppress_check(&s, "key_b");
-    assert(!b);
-    printf("  [PASS] test_different_keys_independent\n");
+    suppress_init(&s, SUPPRESS_MODE_TIMED, 500, 0);
+    suppress_record(&s, 1000);
+    suppress_check(&s, 1600);
+    bool r = suppress_record(&s, 1600);
+    assert(r == false);
+    assert(suppress_is_active(&s) == true);
 }
 
-static void test_reset_clears_suppression(void) {
+TEST(count_below_threshold) {
     suppress_t s;
-    suppress_init(&s, 60);
-    suppress_check(&s, "rss_spike");
-    suppress_check(&s, "rss_spike"); /* now suppressed */
-    suppress_reset(&s, "rss_spike");
-    bool suppressed = suppress_check(&s, "rss_spike");
-    assert(!suppressed);
-    printf("  [PASS] test_reset_clears_suppression\n");
+    suppress_init(&s, SUPPRESS_MODE_COUNT, 1000, 3);
+    suppress_record(&s, 0);
+    suppress_record(&s, 100);
+    bool r = suppress_record(&s, 200);
+    assert(r == false);
+    assert(suppress_get_count(&s) == 3);
 }
 
-static void test_expire_removes_old_entries(void) {
+TEST(count_exceeds_threshold) {
     suppress_t s;
-    suppress_init(&s, 1); /* 1 second window */
-    suppress_check(&s, "short_lived");
-    assert(s.count == 1);
-    sleep(2);
-    suppress_expire(&s);
-    assert(suppress_count(&s, "short_lived") == 0);
-    printf("  [PASS] test_expire_removes_old_entries\n");
+    suppress_init(&s, SUPPRESS_MODE_COUNT, 1000, 3);
+    suppress_record(&s, 0);
+    suppress_record(&s, 100);
+    suppress_record(&s, 200);
+    bool r = suppress_record(&s, 300);
+    assert(r == true);
+    assert(suppress_is_active(&s) == true);
 }
 
-static void test_reset_all(void) {
+TEST(count_window_resets) {
     suppress_t s;
-    suppress_init(&s, 60);
-    suppress_check(&s, "a");
-    suppress_check(&s, "b");
-    suppress_reset_all(&s);
-    assert(s.count == 0);
-    printf("  [PASS] test_reset_all\n");
+    suppress_init(&s, SUPPRESS_MODE_COUNT, 1000, 2);
+    suppress_record(&s, 0);
+    suppress_record(&s, 100);
+    suppress_record(&s, 200); /* triggers suppress */
+    bool r = suppress_record(&s, 1200); /* new window */
+    assert(r == false);
+    assert(suppress_get_count(&s) == 1);
+}
+
+TEST(reset_clears_state) {
+    suppress_t s;
+    suppress_init(&s, SUPPRESS_MODE_TIMED, 500, 0);
+    suppress_record(&s, 1000);
+    suppress_reset(&s);
+    assert(suppress_is_active(&s) == false);
+    assert(suppress_get_count(&s) == 0);
+}
+
+TEST(null_safety) {
+    assert(suppress_check(NULL, 0) == false);
+    assert(suppress_record(NULL, 0) == false);
+    assert(suppress_is_active(NULL) == false);
+    assert(suppress_get_count(NULL) == 0);
 }
 
 int main(void) {
-    printf("Running suppress tests...\n");
-    test_init();
-    test_first_event_not_suppressed();
-    test_repeat_within_window_suppressed();
-    test_different_keys_independent();
-    test_reset_clears_suppression();
-    test_expire_removes_old_entries();
-    test_reset_all();
-    printf("All suppress tests passed.\n");
-    return 0;
+    printf("test_suppress\n");
+    RUN(timed_first_event_not_suppressed);
+    RUN(timed_subsequent_suppressed);
+    RUN(timed_expires);
+    RUN(timed_new_event_after_expiry);
+    RUN(count_below_threshold);
+    RUN(count_exceeds_threshold);
+    RUN(count_window_resets);
+    RUN(reset_clears_state);
+    RUN(null_safety);
+    printf("Results: %d passed, %d failed\n", passed, failed);
+    return failed ? 1 : 0;
 }

@@ -3,32 +3,38 @@
 
 #include <stdint.h>
 #include <stdbool.h>
-#include <time.h>
 
-/* Suppress repeated alerts/events for a given key within a time window */
-
-#define SUPPRESS_MAX_KEYS 64
-#define SUPPRESS_KEY_LEN  32
-
-typedef struct {
-    char     key[SUPPRESS_KEY_LEN];
-    uint32_t count;        /* times suppressed */
-    time_t   first_seen;
-    time_t   last_seen;
-    bool     active;
-} suppress_entry_t;
+typedef enum {
+    SUPPRESS_MODE_TIMED,   /* suppress for a fixed duration after first event */
+    SUPPRESS_MODE_COUNT    /* suppress after max_count events in window */
+} suppress_mode_t;
 
 typedef struct {
-    suppress_entry_t entries[SUPPRESS_MAX_KEYS];
-    int      count;
-    uint32_t window_sec;   /* suppression window in seconds */
+    suppress_mode_t mode;
+    uint32_t        window_ms;        /* window or suppression duration in ms */
+    uint32_t        max_count;        /* threshold for COUNT mode */
+    uint32_t        count;            /* events recorded in current window */
+    uint32_t        window_start_ms;  /* start of current window */
+    uint32_t        suppress_until_ms;/* end of timed suppression */
+    bool            active;           /* currently suppressing */
 } suppress_t;
 
-void     suppress_init(suppress_t *s, uint32_t window_sec);
-bool     suppress_check(suppress_t *s, const char *key); /* true = suppressed */
-void     suppress_reset(suppress_t *s, const char *key);
-void     suppress_reset_all(suppress_t *s);
-uint32_t suppress_count(const suppress_t *s, const char *key);
-void     suppress_expire(suppress_t *s);  /* remove expired entries */
+/* Initialize suppressor */
+void suppress_init(suppress_t *s, suppress_mode_t mode, uint32_t window_ms, uint32_t max_count);
+
+/* Reset suppressor state */
+void suppress_reset(suppress_t *s);
+
+/* Check if currently suppressed without recording an event */
+bool suppress_check(suppress_t *s, uint32_t now_ms);
+
+/* Record an event and return true if it should be suppressed */
+bool suppress_record(suppress_t *s, uint32_t now_ms);
+
+/* Get number of events recorded in current window */
+uint32_t suppress_get_count(const suppress_t *s);
+
+/* Check if suppressor is active */
+bool suppress_is_active(const suppress_t *s);
 
 #endif /* SUPPRESS_H */
