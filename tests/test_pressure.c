@@ -58,9 +58,24 @@ static void test_sample_fill_invalid_pid(void) {
     printf("PASS test_sample_fill_invalid_pid\n");
 }
 
+/* Verify that evaluate returns PRESSURE_NONE for values strictly below the
+ * low threshold, and that the boundary between levels is exclusive on the
+ * lower end (i.e. a value of threshold - 1 stays in the previous level). */
+static void test_evaluate_boundaries(void) {
+    pressure_config_t cfg;
+    pressure_config_default(&cfg);
+
+    assert(pressure_evaluate(&cfg, cfg.low_threshold_kb - 1)      == PRESSURE_NONE);
+    assert(pressure_evaluate(&cfg, cfg.medium_threshold_kb - 1)   == PRESSURE_LOW);
+    assert(pressure_evaluate(&cfg, cfg.high_threshold_kb - 1)     == PRESSURE_MEDIUM);
+    assert(pressure_evaluate(&cfg, cfg.critical_threshold_kb - 1) == PRESSURE_HIGH);
+    printf("PASS test_evaluate_boundaries\n");
+}
+
 int main(void) {
     test_config_default();
     test_evaluate_levels();
+    test_evaluate_boundaries();
     test_level_str();
     test_sample_fill_self();
     test_sample_fill_invalid_pid();
