@@ -64,6 +64,14 @@ TEST(remaining_ms_expired) {
     assert(cooldown_remaining_ms(&cd, 1500) == 0);
 }
 
+TEST(remaining_ms_inactive) {
+    /* When cooldown is not active, remaining should be 0 regardless of time */
+    Cooldown cd;
+    cooldown_init(&cd, 1000);
+    assert(cooldown_remaining_ms(&cd, 0) == 0);
+    assert(cooldown_remaining_ms(&cd, 9999) == 0);
+}
+
 TEST(reset) {
     Cooldown cd;
     cooldown_init(&cd, 500);
@@ -82,6 +90,7 @@ int main(void) {
     RUN(trigger_allowed_after_period);
     RUN(remaining_ms);
     RUN(remaining_ms_expired);
+    RUN(remaining_ms_inactive);
     RUN(reset);
     printf("Results: %d passed, %d failed\n", passed, failed);
     return failed ? 1 : 0;
