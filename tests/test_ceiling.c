@@ -1,112 +1,105 @@
 #include <stdio.h>
 #include <assert.h>
-#include <stdint.h>
 #include "../src/ceiling.h"
 
-static int tests_run = 0;
-static int tests_passed = 0;
-
-#define TEST(name) do { tests_run++; printf("  [TEST] %s\n", name); } while(0)
-#define PASS() do { tests_passed++; } while(0)
-#define FAIL(msg) do { fprintf(stderr, "  [FAIL] %s\n", msg); } while(0)
-
-static void test_init(void) {
-    TEST("ceiling_init sets limit and clears state");
+static void test_no_breach(void) {
     Ceiling c;
-    ceiling_init(&c, 1024);
-    assert(c.limit == 1024);
-    assert(c.violated == 0);
-    assert(c.violation_count == 0);
-    assert(c.last_value == 0);
-    PASS();
+    CeilingConfig cfg = { .hard_limit = 1000, .soft_limit = 800 };
+    ceiling_init(&c, &cfg);
+
+    CeilingResult r = ceiling_check(&c, 500);
+    assert(!r.breached);
+    assert(r.severity == CEILING_OK);
+    assert(!ceiling_is_active(&c));
+    assert(ceiling_breach_count(&c) == 0);
+    printf("PASS test_no_breach\n");
 }
 
-static void test_eval_under_limit(void) {
-    TEST("ceiling_eval returns value when under limit");
+static void test_soft_breach(void) {
     Ceiling c;
-    ceiling_init(&c, 1000);
-    size_t result = ceiling_eval(&c, 500);
-    assert(result == 500);
-    assert(c.violated == 0);
-    assert(c.violation_count == 0);
-    PASS();
+    CeilingConfig cfg = { .hard_limit = 1000, .soft_limit = 800 };
+    ceiling_init(&c, &cfg);
+
+    CeilingResult r = ceiling_check(&c, 850);
+    assert(r.breached);
+    assert(r.severity == CEILING_SOFT);
+    assert(!ceiling_is_active(&c));
+    assert(ceiling_breach_count(&c) == 0);
+    printf("PASS test_soft_breach\n");
 }
 
-static void test_eval_at_limit(void) {
-    TEST("ceiling_eval returns limit when value equals limit");
+static void test_hard_breach(void) {
     Ceiling c;
-    ceiling_init(&c, 1000);
-    size_t result = ceiling_eval(&c, 1000);
-    assert(result == 1000);
-    assert(c.violated == 0);
-    assert(c.violation_count == 0);
-    PASS();
+    CeilingConfig cfg = { .hard_limit = 1000, .soft_limit = 800 };
+    ceiling_init(&c, &cfg);
+
+    CeilingResult r = ceiling_check(&c, 1200);
+    assert(r.breached);
+    assert(r.severity == CEILING_HARD);
+    assert(ceiling_is_active(&c));
+    assert(ceiling_breach_count(&c) == 1);
+    assert(r.consecutive == 1);
+    printf("PASS test_hard_breach\n");
 }
 
-static void test_eval_over_limit(void) {
-    TEST("ceiling_eval clamps and records violation when over limit");
+static void test_consecutive_hard_breaches(void) {
     Ceiling c;
-    ceiling_init(&c, 1000);
-    size_t result = ceiling_eval(&c, 1500);
-    assert(result == 1000);
-    assert(ceiling_is_violated(&c) != 0);
-    assert(ceiling_violation_count(&c) == 1);
-    assert(c.last_value == 1500);
-    PASS();
+    CeilingConfig cfg = { .hard_limit = 1000, .soft_limit = 0 };
+    ceiling_init(&c, &cfg);
+
+    ceiling_check(&c, 1100);
+    ceiling_check(&c, 1200);
+    CeilingResult r = ceiling_check(&c, 1300);
+
+    assert(r.consecutive == 3);
+    assert(ceiling_breach_count(&c) == 3);
+    printf("PASS test_consecutive_hard_breaches\n");
 }
 
-static void test_multiple_violations(void) {
-    TEST("ceiling_eval accumulates violation count");
+static void test_recovery_resets_consecutive(void) {
     Ceiling c;
-    ceiling_init(&c, 512);
-    ceiling_eval(&c, 600);
-    ceiling_eval(&c, 700);
-    ceiling_eval(&c, 400); /* no violation */
-    ceiling_eval(&c, 900);
-    assert(ceiling_violation_count(&c) == 3);
-    assert(ceiling_is_violated(&c) != 0);
-    PASS();
+    CeilingConfig cfg = { .hard_limit = 1000, .soft_limit = 0 };
+    ceiling_init(&c, &cfg);
+
+    ceiling_check(&c, 1100);
+    ceiling_check(&c, 1200);
+    ceiling_check(&c, 500);  /* recovery */
+    assert(!ceiling_is_active(&c));
+
+    CeilingResult r = ceiling_check(&c, 1050);
+    assert(r.consecutive == 1);
+    printf("PASS test_recovery_resets_consecutive\n");
 }
 
 static void test_reset(void) {
-    TEST("ceiling_reset clears violation state but preserves limit");
     Ceiling c;
-    ceiling_init(&c, 256);
-    ceiling_eval(&c, 512);
-    assert(ceiling_violation_count(&c) == 1);
+    CeilingConfig cfg = { .hard_limit = 500, .soft_limit = 0 };
+    ceiling_init(&c, &cfg);
+
+    ceiling_check(&c, 600);
+    ceiling_check(&c, 700);
     ceiling_reset(&c);
-    assert(c.violation_count == 0);
-    assert(c.violated == 0);
-    assert(c.limit == 256);
-    PASS();
+
+    assert(!ceiling_is_active(&c));
+    assert(ceiling_breach_count(&c) == 0);
+    printf("PASS test_reset\n");
 }
 
-static void test_set_limit(void) {
-    TEST("ceiling_set_limit updates limit and resets state");
-    Ceiling c;
-    ceiling_init(&c, 100);
-    ceiling_eval(&c, 200);
-    assert(ceiling_violation_count(&c) == 1);
-    ceiling_set_limit(&c, 500);
-    assert(c.limit == 500);
-    assert(c.violation_count == 0);
-    assert(c.violated == 0);
-    /* value previously over old limit is now fine */
-    size_t result = ceiling_eval(&c, 200);
-    assert(result == 200);
-    assert(ceiling_is_violated(&c) == 0);
-    PASS();
+static void test_severity_str(void) {
+    assert(__builtin_strcmp(ceiling_severity_str(CEILING_OK),   "ok")   == 0);
+    assert(__builtin_strcmp(ceiling_severity_str(CEILING_SOFT), "soft") == 0);
+    assert(__builtin_strcmp(ceiling_severity_str(CEILING_HARD), "hard") == 0);
+    printf("PASS test_severity_str\n");
 }
 
 int main(void) {
-    printf("=== test_ceiling ===\n");
-    test_init();
-    test_eval_under_limit();
-    test_eval_at_limit();
-    test_eval_over_limit();
-    test_multiple_violations();
+    test_no_breach();
+    test_soft_breach();
+    test_hard_breach();
+    test_consecutive_hard_breaches();
+    test_recovery_resets_consecutive();
     test_reset();
-    test_set_limit();
-    printf("Results: %d/%d passed\n", tests_passed, tests_run);
-    return (tests_passed == tests_run) ? 0 : 1;
+    test_severity_str();
+    printf("All ceiling tests passed.\n");
+    return 0;
 }
