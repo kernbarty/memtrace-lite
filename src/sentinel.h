@@ -1,96 +1,60 @@
-/**
- * sentinel.h - Memory sentinel: watches a set of guards and escalates
- *              violations through a unified policy interface.
+/*
+ * sentinel.h - Watchpoint-style sentinel for memory region boundary violations
  *
- * A sentinel aggregates multiple guard checks and fence policies,
- * coordinating their evaluation and routing violations to the
- * appropriate escalation or suppression handlers.
+ * Monitors a named memory metric against warn/critical thresholds.
+ * Fires a callback on state transitions and tracks trip counts.
  */
 
 #ifndef SENTINEL_H
 #define SENTINEL_H
 
 #include <stddef.h>
-#include <stdint.h>
-#include <time.h>
+#include <stdio.h>
 
-#include "guard.h"
-#include "fence.h"
-#include "escalate.h"
-#include "suppress.h"
-
-#ifdef __cplusplus
-extern "C" {
-#endif
-
-#define SENTINEL_MAX_GUARDS  8
-#define SENTINEL_MAX_FENCES  8
+#define SENTINEL_NAME_MAX 64
 
 typedef enum {
-    SENTINEL_OK        = 0,  /* all checks passed */
-    SENTINEL_WARN      = 1,  /* soft limit breached */
-    SENTINEL_BREACH    = 2,  /* hard limit breached */
-    SENTINEL_CRITICAL  = 3   /* critical threshold exceeded */
-} sentinel_status_t;
+    SENTINEL_OK       = 0,
+    SENTINEL_WARN     = 1,
+    SENTINEL_CRITICAL = 2
+} SentinelState;
 
 typedef struct {
-    GuardCtx    *guards[SENTINEL_MAX_GUARDS];
-    size_t       guard_count;
+    char          name[SENTINEL_NAME_MAX];
+    SentinelState state;
+    size_t        value_kb;
+    unsigned int  trip_count;
+} SentinelEvent;
 
-    FenceCtx    *fences[SENTINEL_MAX_FENCES];
-    size_t       fence_count;
+typedef void (*sentinel_cb)(const SentinelEvent *ev, void *user_data);
 
-    EscalateCtx *escalator;   /* optional escalation handler */
-    SuppressCtx *suppressor;  /* optional suppression handler */
+typedef struct {
+    char          name[SENTINEL_NAME_MAX];
+    size_t        warn_kb;        /* warn threshold in KB (0 = disabled) */
+    size_t        critical_kb;    /* critical threshold in KB (0 = disabled) */
+    SentinelState state;          /* current state */
+    size_t        last_value_kb;  /* last observed value */
+    unsigned int  trip_count;     /* total number of threshold crossings */
+    sentinel_cb   callback;       /* optional event callback */
+    void         *user_data;      /* opaque pointer passed to callback */
+} Sentinel;
 
-    sentinel_status_t last_status;
-    time_t            last_check_ts;
-    uint64_t          check_count;
-    uint64_t          breach_count;
-} SentinelCtx;
+/* Initialise sentinel with name and thresholds */
+void sentinel_init(Sentinel *s, const char *name, size_t warn_kb, size_t critical_kb);
 
-/**
- * sentinel_init - Initialise a sentinel context.
- * @s: pointer to SentinelCtx to initialise
- */
-void sentinel_init(SentinelCtx *s);
+/* Register a callback fired on each threshold trip */
+void sentinel_set_callback(Sentinel *s, sentinel_cb cb, void *user_data);
 
-/**
- * sentinel_add_guard - Register a guard with the sentinel.
- * Returns 0 on success, -1 if the guard table is full.
- */
-int sentinel_add_guard(SentinelCtx *s, GuardCtx *g);
+/* Feed a new sample; returns resulting state */
+SentinelState sentinel_check(Sentinel *s, size_t current_kb);
 
-/**
- * sentinel_add_fence - Register a fence with the sentinel.
- * Returns 0 on success, -1 if the fence table is full.
- */
-int sentinel_add_fence(SentinelCtx *s, FenceCtx *f);
+/* Reset state and trip counter (thresholds preserved) */
+void sentinel_reset(Sentinel *s);
 
-/**
- * sentinel_set_escalator - Attach an escalation handler.
- */
-void sentinel_set_escalator(SentinelCtx *s, EscalateCtx *e);
+/* Human-readable state label */
+const char *sentinel_state_str(SentinelState state);
 
-/**
- * sentinel_set_suppressor - Attach a suppression handler.
- */
-void sentinel_set_suppressor(SentinelCtx *s, SuppressCtx *sup);
-
-/**
- * sentinel_check - Evaluate all registered guards and fences
- *                  against the supplied memory value (bytes).
- * Returns the aggregate sentinel_status_t.
- */
-sentinel_status_t sentinel_check(SentinelCtx *s, size_t mem_bytes);
-
-/**
- * sentinel_reset - Reset breach counters and status.
- */
-void sentinel_reset(SentinelCtx *s);
-
-#ifdef __cplusplus
-}
-#endif
+/* Print sentinel summary to file stream */
+void sentinel_dump(const Sentinel *s, FILE *out);
 
 #endif /* SENTINEL_H */
