@@ -1,92 +1,62 @@
 /*
- * watchdog.h - Periodic health check and recovery mechanism for memory monitoring
- *
- * Provides a watchdog timer that monitors the health of the memory tracer
- * itself, detecting stalls, hangs, or missed sampling intervals and
- * triggering recovery actions accordingly.
+ * watchdog.h - Watchdog monitor for memory usage violations
  */
 
-#ifndef MEMTRACE_WATCHDOG_H
-#define MEMTRACE_WATCHDOG_H
+#ifndef WATCHDOG_H
+#define WATCHDOG_H
 
-#include <stdint.h>
-#include <time.h>
+#include <sys/types.h>
+#include "snapshot.h"
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
-/* Maximum label length for watchdog instance identification */
-#define WATCHDOG_LABEL_MAX 32
-
-/* Watchdog states */
 typedef enum {
-    WATCHDOG_STATE_IDLE    = 0,  /* Not yet started */
-    WATCHDOG_STATE_ACTIVE  = 1,  /* Running and healthy */
-    WATCHDOG_STATE_EXPIRED = 2,  /* Timeout elapsed without a kick */
-    WATCHDOG_STATE_TRIPPED = 3   /* Recovery action has been triggered */
+    WD_STATE_IDLE = 0,
+    WD_STATE_OK,
+    WD_STATE_VIOLATION,
+    WD_STATE_CRITICAL,
+    WD_STATE_RECOVERING,
+    WD_STATE_ERROR
 } WatchdogState;
 
-/* Recovery action callback: called when watchdog expires */
-typedef void (*watchdog_action_fn)(void *userdata);
+typedef enum {
+    WD_RESULT_OK = 0,
+    WD_RESULT_VIOLATION,
+    WD_RESULT_CRITICAL,
+    WD_RESULT_SKIPPED,
+    WD_RESULT_ERROR
+} WatchdogResult;
 
 typedef struct {
-    char              label[WATCHDOG_LABEL_MAX]; /* Human-readable name */
-    uint64_t          timeout_ms;               /* Expiry window in milliseconds */
-    watchdog_action_fn action;                  /* Called on expiry */
-    void             *userdata;                 /* Passed to action callback */
+    pid_t        pid;
+    MemSnapshot  snap;
+    unsigned int violation_count;
+    unsigned int consecutive;
+} WatchdogEvent;
 
-    /* Internal state */
-    WatchdogState     state;
-    struct timespec   last_kick;                /* Time of last successful kick */
-    uint32_t          trip_count;              /* Number of times watchdog tripped */
-    uint64_t          total_kicks;             /* Lifetime kick counter */
+typedef void (*WatchdogCallback)(const WatchdogEvent *ev, void *user_data);
+
+typedef struct {
+    long             interval_ms;      /* minimum ms between checks     */
+    long             rss_limit_kb;     /* RSS limit, 0 = disabled        */
+    long             vms_limit_kb;     /* VMS limit, 0 = disabled        */
+    unsigned int     max_consecutive;  /* consecutive violations -> crit */
+    WatchdogCallback on_violation;     /* called on each violation       */
+    WatchdogCallback on_critical;      /* called when critical reached   */
+    void            *user_data;        /* passed to callbacks            */
+} WatchdogConfig;
+
+typedef struct {
+    WatchdogConfig cfg;
+    WatchdogState  state;
+    MemSnapshot    last_snapshot;
+    unsigned int   violation_count;
+    unsigned int   consecutive_violations;
+    long           last_check_ts;
 } Watchdog;
 
-/*
- * watchdog_init - Initialise a watchdog instance.
- *
- * @wd:         Pointer to Watchdog struct to initialise.
- * @label:      Short descriptive name (truncated to WATCHDOG_LABEL_MAX-1).
- * @timeout_ms: Milliseconds before the watchdog is considered expired.
- * @action:     Callback invoked when the watchdog expires (may be NULL).
- * @userdata:   Opaque pointer forwarded to @action.
- */
-void watchdog_init(Watchdog *wd, const char *label, uint64_t timeout_ms,
-                   watchdog_action_fn action, void *userdata);
+void           watchdog_init(Watchdog *wd, const WatchdogConfig *cfg);
+void           watchdog_reset(Watchdog *wd);
+WatchdogResult watchdog_check(Watchdog *wd, pid_t pid);
+WatchdogState  watchdog_state(const Watchdog *wd);
+const char    *watchdog_state_str(WatchdogState state);
 
-/*
- * watchdog_kick - Reset the watchdog timer, indicating the system is alive.
- * Must be called within @timeout_ms to prevent expiry.
- */
-void watchdog_kick(Watchdog *wd);
-
-/*
- * watchdog_check - Evaluate whether the watchdog has expired.
- * If expired and an action is registered, the action is invoked once and
- * the state transitions to WATCHDOG_STATE_TRIPPED.
- *
- * Returns 1 if the watchdog has expired, 0 otherwise.
- */
-int watchdog_check(Watchdog *wd);
-
-/*
- * watchdog_reset - Reset state to ACTIVE and restart the timer.
- * Useful after a trip to re-arm the watchdog.
- */
-void watchdog_reset(Watchdog *wd);
-
-/* watchdog_state - Return the current WatchdogState. */
-WatchdogState watchdog_state(const Watchdog *wd);
-
-/* watchdog_trip_count - Return how many times the watchdog has tripped. */
-uint32_t watchdog_trip_count(const Watchdog *wd);
-
-/* watchdog_elapsed_ms - Milliseconds since the last kick (or init). */
-uint64_t watchdog_elapsed_ms(const Watchdog *wd);
-
-#ifdef __cplusplus
-}
-#endif
-
-#endif /* MEMTRACE_WATCHDOG_H */
+#endif /* WATCHDOG_H */
