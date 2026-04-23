@@ -1,48 +1,39 @@
 #ifndef HEARTBEAT_H
 #define HEARTBEAT_H
 
-#include <time.h>
-#include <stdbool.h>
-
-/* Heartbeat module: periodic liveness signal for monitored processes.
- * Tracks last-seen timestamps and detects missed beats.
- */
-
-#define HEARTBEAT_MAX_MISSED 5
+#include <stdint.h>
 
 typedef enum {
-    HEARTBEAT_ALIVE  = 0,
-    HEARTBEAT_STALE  = 1,
-    HEARTBEAT_DEAD   = 2
-} HeartbeatStatus;
+    HB_STATE_ALIVE = 0,
+    HB_STATE_DEGRADED,
+    HB_STATE_DEAD
+} HeartbeatState;
+
+typedef struct Heartbeat Heartbeat;
+
+typedef void (*heartbeat_dead_fn)(Heartbeat *hb, void *user_data);
 
 typedef struct {
-    pid_t        pid;
-    time_t       last_beat;      /* epoch seconds of last recorded beat */
-    unsigned int interval_sec;   /* expected beat interval in seconds   */
-    unsigned int missed;         /* consecutive missed beats             */
-    HeartbeatStatus status;
-} Heartbeat;
+    uint64_t         interval_ms;    /* Expected beat interval in milliseconds */
+    uint32_t         miss_threshold; /* Misses before transitioning to DEAD */
+    heartbeat_dead_fn on_dead;       /* Optional callback when state -> DEAD */
+    void            *user_data;
+} HeartbeatConfig;
 
-/* Initialise a heartbeat record for the given pid and expected interval. */
-void heartbeat_init(Heartbeat *hb, pid_t pid, unsigned int interval_sec);
+struct Heartbeat {
+    HeartbeatConfig cfg;
+    HeartbeatState  state;
+    uint64_t        last_beat_ns;
+    uint32_t        miss_count;
+    uint64_t        total_beats;
+};
 
-/* Record that the process is alive right now. Resets missed counter. */
-void heartbeat_pulse(Heartbeat *hb);
-
-/* Evaluate the heartbeat against the current time.
- * Increments missed counter if the deadline has passed.
- * Returns the updated status. */
-HeartbeatStatus heartbeat_check(Heartbeat *hb);
-
-/* Return true if the heartbeat is considered dead
- * (missed >= HEARTBEAT_MAX_MISSED). */
-bool heartbeat_is_dead(const Heartbeat *hb);
-
-/* Reset the heartbeat to ALIVE state without updating last_beat. */
-void heartbeat_reset(Heartbeat *hb);
-
-/* Human-readable status string. */
-const char *heartbeat_status_str(HeartbeatStatus s);
+void            heartbeat_init(Heartbeat *hb, const HeartbeatConfig *cfg);
+void            heartbeat_reset(Heartbeat *hb);
+void            heartbeat_beat(Heartbeat *hb);
+HeartbeatState  heartbeat_check(Heartbeat *hb);
+const char     *heartbeat_state_str(HeartbeatState state);
+uint32_t        heartbeat_miss_count(const Heartbeat *hb);
+uint64_t        heartbeat_total_beats(const Heartbeat *hb);
 
 #endif /* HEARTBEAT_H */

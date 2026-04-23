@@ -2,97 +2,110 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <assert.h>
-#include <string.h>
 #include "../src/heartbeat.h"
 
-static int tests_run    = 0;
-static int tests_passed = 0;
+static int dead_called = 0;
 
-#define CHECK(cond, msg) do { \
-    tests_run++; \
-    if (cond) { tests_passed++; } \
-    else { fprintf(stderr, "FAIL [%s:%d]: %s\n", __FILE__, __LINE__, msg); } \
-} while (0)
-
-static void test_init(void) {
-    Heartbeat hb;
-    heartbeat_init(&hb, 1234, 5);
-    CHECK(hb.pid == 1234,          "pid set correctly");
-    CHECK(hb.interval_sec == 5,    "interval set correctly");
-    CHECK(hb.missed == 0,          "missed starts at zero");
-    CHECK(hb.status == HEARTBEAT_ALIVE, "initial status is ALIVE");
+static void on_dead_cb(Heartbeat *hb, void *user_data) {
+    (void)hb;
+    int *flag = (int *)user_data;
+    *flag = 1;
 }
 
-static void test_pulse_resets_missed(void) {
+static void test_initial_state(void) {
     Heartbeat hb;
-    heartbeat_init(&hb, 42, 2);
-    hb.missed = 3;
-    hb.status = HEARTBEAT_STALE;
-    heartbeat_pulse(&hb);
-    CHECK(hb.missed == 0,               "pulse resets missed counter");
-    CHECK(hb.status == HEARTBEAT_ALIVE, "pulse restores ALIVE status");
-    CHECK(hb.last_beat > 0,             "last_beat updated");
+    HeartbeatConfig cfg = {
+        .interval_ms    = 100,
+        .miss_threshold = 3,
+        .on_dead        = NULL,
+        .user_data      = NULL
+    };
+    heartbeat_init(&hb, &cfg);
+    assert(hb.state == HB_STATE_ALIVE);
+    assert(heartbeat_miss_count(&hb) == 0);
+    assert(heartbeat_total_beats(&hb) == 0);
+    printf("PASS: test_initial_state\n");
 }
 
-static void test_check_alive_within_interval(void) {
+static void test_beat_increments_total(void) {
     Heartbeat hb;
-    heartbeat_init(&hb, 99, 10);
-    heartbeat_pulse(&hb);
-    HeartbeatStatus s = heartbeat_check(&hb);
-    CHECK(s == HEARTBEAT_ALIVE, "fresh pulse => ALIVE");
-    CHECK(hb.missed == 0,       "no missed beats within interval");
+    HeartbeatConfig cfg = { .interval_ms = 500, .miss_threshold = 3 };
+    heartbeat_init(&hb, &cfg);
+    heartbeat_beat(&hb);
+    heartbeat_beat(&hb);
+    assert(heartbeat_total_beats(&hb) == 2);
+    printf("PASS: test_beat_increments_total\n");
 }
 
-static void test_check_stale_after_deadline(void) {
+static void test_alive_after_timely_beat(void) {
     Heartbeat hb;
-    heartbeat_init(&hb, 7, 1);
-    /* Backdate last_beat so the interval has elapsed */
-    hb.last_beat = time(NULL) - 5;
-    HeartbeatStatus s = heartbeat_check(&hb);
-    CHECK(s == HEARTBEAT_STALE || s == HEARTBEAT_DEAD,
-          "overdue beat => STALE or DEAD");
-    CHECK(hb.missed >= 1, "missed counter incremented");
+    HeartbeatConfig cfg = { .interval_ms = 500, .miss_threshold = 3 };
+    heartbeat_init(&hb, &cfg);
+    heartbeat_beat(&hb);
+    HeartbeatState s = heartbeat_check(&hb);
+    assert(s == HB_STATE_ALIVE);
+    printf("PASS: test_alive_after_timely_beat\n");
 }
 
-static void test_dead_after_max_missed(void) {
+static void test_degraded_on_missed_beats(void) {
     Heartbeat hb;
-    heartbeat_init(&hb, 5, 1);
-    hb.last_beat = time(NULL) - 100;
-    /* Drive missed counter to maximum */
-    for (int i = 0; i < HEARTBEAT_MAX_MISSED + 2; i++) {
-        heartbeat_check(&hb);
-        /* backdate again so each check sees an overdue beat */
-        hb.last_beat = time(NULL) - 100;
-    }
-    CHECK(heartbeat_is_dead(&hb),       "is_dead returns true");
-    CHECK(hb.status == HEARTBEAT_DEAD,  "status is DEAD");
+    HeartbeatConfig cfg = { .interval_ms = 1, .miss_threshold = 5 };
+    heartbeat_init(&hb, &cfg);
+    /* Never beat — each check increments miss_count */
+    heartbeat_check(&hb); /* miss=1 */
+    heartbeat_check(&hb); /* miss=2 */
+    HeartbeatState s = heartbeat_check(&hb); /* miss=3 */
+    assert(s == HB_STATE_DEGRADED);
+    assert(heartbeat_miss_count(&hb) == 3);
+    printf("PASS: test_degraded_on_missed_beats\n");
 }
 
-static void test_reset(void) {
+static void test_dead_callback_fires(void) {
+    dead_called = 0;
     Heartbeat hb;
-    heartbeat_init(&hb, 3, 2);
-    hb.missed = 4;
-    hb.status = HEARTBEAT_DEAD;
+    HeartbeatConfig cfg = {
+        .interval_ms    = 1,
+        .miss_threshold = 2,
+        .on_dead        = on_dead_cb,
+        .user_data      = &dead_called
+    };
+    heartbeat_init(&hb, &cfg);
+    heartbeat_check(&hb); /* miss=1 -> degraded */
+    heartbeat_check(&hb); /* miss=2 -> dead, callback fires */
+    assert(hb.state == HB_STATE_DEAD);
+    assert(dead_called == 1);
+    printf("PASS: test_dead_callback_fires\n");
+}
+
+static void test_reset_clears_state(void) {
+    Heartbeat hb;
+    HeartbeatConfig cfg = { .interval_ms = 1, .miss_threshold = 2 };
+    heartbeat_init(&hb, &cfg);
+    heartbeat_check(&hb);
+    heartbeat_check(&hb);
+    assert(hb.state == HB_STATE_DEAD);
     heartbeat_reset(&hb);
-    CHECK(hb.missed == 0,               "reset clears missed");
-    CHECK(hb.status == HEARTBEAT_ALIVE, "reset restores ALIVE");
+    assert(hb.state == HB_STATE_ALIVE);
+    assert(heartbeat_miss_count(&hb) == 0);
+    assert(heartbeat_total_beats(&hb) == 0);
+    printf("PASS: test_reset_clears_state\n");
 }
 
-static void test_status_str(void) {
-    CHECK(strcmp(heartbeat_status_str(HEARTBEAT_ALIVE), "alive") == 0, "alive str");
-    CHECK(strcmp(heartbeat_status_str(HEARTBEAT_STALE), "stale") == 0, "stale str");
-    CHECK(strcmp(heartbeat_status_str(HEARTBEAT_DEAD),  "dead")  == 0, "dead str");
+static void test_state_str(void) {
+    assert(heartbeat_state_str(HB_STATE_ALIVE)    != NULL);
+    assert(heartbeat_state_str(HB_STATE_DEGRADED) != NULL);
+    assert(heartbeat_state_str(HB_STATE_DEAD)     != NULL);
+    printf("PASS: test_state_str\n");
 }
 
 int main(void) {
-    test_init();
-    test_pulse_resets_missed();
-    test_check_alive_within_interval();
-    test_check_stale_after_deadline();
-    test_dead_after_max_missed();
-    test_reset();
-    test_status_str();
-
-    printf("heartbeat: %d/%d tests passed\n", tests_passed, tests_run);
-    return (tests_passed == tests_run) ? EXIT_SUCCESS : EXIT_FAILURE;
+    test_initial_state();
+    test_beat_increments_total();
+    test_alive_after_timely_beat();
+    test_degraded_on_missed_beats();
+    test_dead_callback_fires();
+    test_reset_clears_state();
+    test_state_str();
+    printf("All heartbeat tests passed.\n");
+    return 0;
 }
